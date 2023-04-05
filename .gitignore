@@ -1,0 +1,9 @@
+﻿################################################################################
+# この .gitignore ファイルは Microsoft(R) Visual Studio によって自動的に作成されました。
+################################################################################
+
+/x64
+/cpp.hint
+/CodingameOthello.vcxproj.user
+/CodingameOthello.vcxproj.filters
+/CodingameOthello.vcxproj
