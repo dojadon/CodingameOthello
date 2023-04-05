@@ -7,7 +7,9 @@
 #define popcount __popcnt64
 #define x_to_bit(x) (1ULL << (x))
 
-#define first_bit std::countr_zero
+ulong first_bit(ulong b) {
+	return b & (~b + 1);
+}
 int next_bit(ulong* b) {
 	*b &= *b - 1;
 	return first_bit(*b);
@@ -736,6 +738,10 @@ float negamax(ulong moves, SP p)
 	ulong move;
 	foreach_bit(move, moves)
 	{
+		if (move == 0) {
+			return max_e;
+		}
+
 		float e = -solve(new Move(search->b, move), p_deepen(p));
 		max_e = max(max_e, e);
 		p.alpha = max(p.alpha, e);
@@ -747,6 +753,9 @@ float negamax(ulong moves, SP p)
 }
 
 float solve(Move *move, SP p) {
+	std::cout << "depth" << p.depth << "\r\n";
+	std::cout << "\r\n";
+
 	std::cout << "move\r\n";
 	std::cout << bit_to_string(move->move);
 	std::cout << "\r\n";
@@ -755,8 +764,8 @@ float solve(Move *move, SP p) {
 	std::cout << b_to_string(search->b);
 	std::cout << "\r\n";
 
-	search->b->bit_b ^= move->reversed_b;
-	search->b->bit_w ^= (move->reversed_b | move->move);
+	search->b->bit_b ^= (move->reversed_b | move->move);
+	search->b->bit_w ^= move->reversed_b;
 	swap_color(search->b);
 
 	std::cout << "next board\r\n";
@@ -766,8 +775,8 @@ float solve(Move *move, SP p) {
 	float e = solve_(move, p);
 
 	swap_color(search->b);
-	search->b->bit_b ^= move->reversed_b;
-	search->b->bit_w ^= (move->reversed_b | move->move);
+	search->b->bit_b ^= (move->reversed_b | move->move);
+	search->b->bit_w ^= move->reversed_b;
 
 	return e;
 }
@@ -829,6 +838,14 @@ float solve_(Move *move, SP p) {
 
 float solve_root(SP p) {
 	ulong moves = get_moves(search->b);
+
+	std::cout << "root board\r\n";
+	std::cout << b_to_string(search->b);
+	std::cout << "\r\n";
+
+	std::cout << "root move\r\n";
+	std::cout << bit_to_string(moves);
+	std::cout << "\r\n";
 
 	float max_e = -1000000;
 	ulong move;
