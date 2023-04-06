@@ -1,5 +1,8 @@
 #include <bit>
 #include <iostream>
+#include <vector>
+#include <algorithm>
+#include <chrono>
 #include "immintrin.h"
 
 #define ulong unsigned long long
@@ -10,17 +13,17 @@
 ulong first_bit(ulong b) {
 	return b & (~b + 1);
 }
-int next_bit(ulong* b) {
-	*b &= *b - 1;
+int next_bit(ulong* b, ulong i) {
+	*b ^= i;
 	return first_bit(*b);
 }
 
-#define foreach_bit(i, b) for (i = first_bit(b); b; i = next_bit(&b))
+#define foreach_bit(i, b) for (i = first_bit(b); i; i = next_bit(&b, i))
 
 const int PLAYER_B = 1;
 const int PLAYER_W = -1;
 
-using namespace std;
+using std::string, std::max, std::min, std::vector;
 
 enum {
 	A1, B1, C1, D1, E1, F1, G1, H1,
@@ -532,18 +535,35 @@ struct Board {
 	}
 };
 
-ulong flip(Board* b, ulong move) {
+ulong flip(const Board* b, ulong move) {
 	return Reverse(b->bit_b, b->bit_w, move);
+}
+
+Board* apply_flip(const Board* b, const ulong move, const ulong f) {
+	return new Board(b->bit_w ^ f, b->bit_b ^ (move | f));
+}
+
+Board* flipped(const Board* b, const ulong move) {
+	ulong f = flip(b, move);
+	return apply_flip(b, move, f);
 }
 
 ulong get_moves(const Board *b) {
 	return get_moves(b->bit_b, b->bit_w);
 }
 
+ulong get_moves_opponent(const Board* b) {
+	return get_moves(b->bit_w, b->bit_b);
+}
+
 void swap_color(Board* b) {
 	const ulong tmp = b->bit_b;
 	b->bit_b = b->bit_w;
 	b->bit_w = tmp;
+}
+
+Board* swaped_color(Board* b) {
+	return new Board(b->bit_w, b->bit_b);
 }
 
 int n_discs(Board *b) {
@@ -599,38 +619,76 @@ string b_to_string(Board* b) {
 	return s;
 }
 
+class Search {
+public:
+	Board* b;
+
+	void flip(ulong move, ulong flip) {
+		ulong tmp = b->bit_b ^ (move | flip);
+		b->bit_b = b->bit_w ^ move;
+		b->bit_w = tmp;
+	}
+
+	void undo_flip(ulong move, ulong flip) {
+		ulong tmp = b->bit_w ^ (move | flip);
+		b->bit_w = b->bit_b ^ move;
+		b->bit_b = tmp;
+	}
+
+	void flip_color() {
+		ulong tmp = b->bit_b;
+		b->bit_b = b->bit_w;
+		b->bit_w = tmp;
+	}
+};
+
+Search* search = new Search;
+
 struct Move {
 	ulong move;
 	ulong reversed_b;
+	ulong moves;
 
 	Move(Board *b, ulong move)
 	{
 		this->move = move;
 		this->reversed_b = flip(b, move);
+
+		search->flip(move, this->reversed_b);
+		this->moves = get_moves(search->b);
+		search->undo_flip(move, this->reversed_b);
 	}
 
-	Move(ulong move, ulong reversed_b)
+	Move(ulong move, ulong reversed_b, ulong moves)
 	{
 		this->move = move;
 		this->reversed_b = reversed_b;
+		this->moves = moves;
 	}
 
-	Move()
-	{
+	Move() {
 		this->move = 0;
 		this->reversed_b = 0;
+		this->moves = 0;
+	}
+
+	bool operator<(const Move& right) const {
+		return popcount(moves) < popcount(right.moves);
 	}
 };
 
-const int MAX_MOVE = 32;
+vector<Move> create_moves(Board* b, ulong moves) {
+	vector<Move> v(popcount(moves));
 
-struct MoveList {
-	Move move[MAX_MOVE + 2];
-	int n_moves;
-};
-
-#define foreach_move(iter, movelist) \
-	for ((iter) = (movelist)->move->next; (iter); (iter) = (iter)->next)
+	ulong m;
+	int i = 0;
+	while ((m = first_bit(moves)) != 0)
+	{
+		moves = moves ^ m;
+		v[i++] = { b, m };
+	}
+	return v;
+}
 
 struct SP {
 	int depth;
@@ -649,12 +707,6 @@ SP p_null_window(SP p) {
 	return  { p.depth - 1, -p.alpha - 1, -p.alpha };
 }
 
-struct Search {
-	Board* b;
-};
-
-Search *search = new Search;
-
 bool use_transposition_cut = true;
 const int transposition = 1;
 const int ordering_depth = 57;
@@ -666,24 +718,28 @@ float null_window_search(Move* m, SP p) {
 	return -solve(m, p_null_window(p));
 }
 
-float negascout(ulong moves, SP p)
+float negascout(Board* b, ulong moves, SP p)
 {
 	ulong move = first_bit(moves);
-	float max_e = -solve(new Move(search->b, move), p_deepen(p));
+	moves ^= move;
+	float max_e = -solve(new Move(b, move), p_deepen(p));
 
 	if (p.beta <= max_e)
 		return max_e;
 
 	p.alpha = max(p.alpha, max_e);
 
-	foreach_bit(move, moves)
+	while ((move = first_bit(moves)) != 0)
 	{
-		Move *m = new Move(search->b, move);
+		moves = moves ^ move;
+		Move *m = new Move(b, move);
 
 		float eval = null_window_search(m, p);
 
 		if (p.beta <= eval)
+		{
 			return eval;
+		}
 
 		if (p.alpha < eval)
 		{
@@ -700,18 +756,18 @@ float negascout(ulong moves, SP p)
 	return max_e;
 }
 
-float negascout(MoveList* moves, SP p)
+float negascout(vector<Move> moves, SP p)
 {
-	float max_e = -solve(&moves->move[0], p_deepen(p));
+	float max_e = -solve(&moves[0], p_deepen(p));
 
 	if (p.beta <= max_e)
 		return max_e;
 
 	p.alpha = max(p.alpha, max_e);
 
-	for (int i = 1; i < moves->n_moves; i++)
+	for (int i = 1; i < moves.size(); ++i)
 	{
-		Move *move = &moves->move[i];
+		Move *move = &moves[i];
 		float eval = null_window_search(move, p);
 
 		if (p.beta <= eval)
@@ -732,19 +788,31 @@ float negascout(MoveList* moves, SP p)
 	return max_e;
 }
 
-float negamax(ulong moves, SP p)
+float negamax(Board* b, ulong moves, SP p)
 {
 	float max_e = -1000000;
-	ulong move;
-	foreach_bit(move, moves)
-	{
-		if (move == 0) {
-			return max_e;
-		}
 
-		float e = -solve(new Move(search->b, move), p_deepen(p));
+	/*string indent = "";
+	for (int i = 0; i < 64 - p.depth; i++)
+		indent += "    ";
+
+	std::cout << indent << "num moves: " << popcount(moves) <<  ", num discs: " << n_discs(b) << "\r\n";*/
+
+	ulong move;
+	while((move = first_bit(moves)) != 0)
+	{
+		moves = moves ^ move;
+		/*std::cout << indent << "depth: " << p.depth << ", move: " << move
+			<< ", ab: [" << p.alpha << ", " << p.beta << "]" << "\r\n";*/
+
+		Move* m = new Move(b, move);
+		float e = -solve(m, p_deepen(p));
+
 		max_e = max(max_e, e);
 		p.alpha = max(p.alpha, e);
+
+		/*std::cout << indent << "depth: " << p.depth << ", move: " << move
+			<< ", ab: [" << p.alpha  << ", " << p.beta << "]" << ", e: " << e << "\r\n";*/
 
 		if (p.alpha >= p.beta)
 			return max_e;
@@ -753,54 +821,54 @@ float negamax(ulong moves, SP p)
 }
 
 float solve(Move *move, SP p) {
-	std::cout << "depth" << p.depth << "\r\n";
+	std::cout << "depth " << p.depth << "\r\n";
 	std::cout << "\r\n";
 
 	std::cout << "move\r\n";
 	std::cout << bit_to_string(move->move);
 	std::cout << "\r\n";
 
-	std::cout << "prev board\r\n";
+	std::cout << "board\r\n";
 	std::cout << b_to_string(search->b);
 	std::cout << "\r\n";
 
-	search->b->bit_b ^= (move->reversed_b | move->move);
-	search->b->bit_w ^= move->reversed_b;
-	swap_color(search->b);
-
-	std::cout << "next board\r\n";
-	std::cout << b_to_string(search->b);
-	std::cout << "\r\n";
+	if (move->move != 0)
+		search->flip(move->move, move->reversed_b);
+	else
+		search->flip_color();
 
 	float e = solve_(move, p);
 
-	swap_color(search->b);
-	search->b->bit_b ^= (move->reversed_b | move->move);
-	search->b->bit_w ^= move->reversed_b;
+	if (move->move != 0)
+		search->undo_flip(move->move, move->reversed_b);
+	else
+		search->flip_color();
 
 	return e;
 }
 
+int count = 0;
+
 float solve_(Move *move, SP p) {
 	if (p.depth <= 0)
+		// return n_discs_gap(search->b);
 		return eval();
 
-	ulong moves = get_moves(search->b);
+	//std::cout << "moves\r\n";
+	//std::cout << bit_to_string(moves) << "\r\n";
+	//std::cout << p.depth << "\r\n";
 
-	std::cout << "moves\r\n";
-	std::cout << bit_to_string(moves) << "\r\n";
-	std::cout << p.depth << "\r\n";
-
-	if (moves == 0)
+	if (move->moves == 0)
 	{
-		ulong opponentMoves = get_moves(search->b);
-		if (opponentMoves == 0)
+		ulong opponent_moves = get_moves_opponent(search->b);
+		if (opponent_moves == 0)
 		{
+			count++;
 			return n_discs_gap(search->b);
 		}
 		else
 		{
-			Move *next = new Move();
+			Move *next = new Move(0, 0, opponent_moves);
 			return -solve(next, p_swap(p));
 		}
 	}
@@ -815,57 +883,76 @@ float solve_(Move *move, SP p) {
 
 	if (p.depth >= 3 && n_discs(search->b) < 60)
 	{
-		/*if (popcount(move->moves) > 3)
-		{
-			MoveList *moves;
+		//if (popcount(move->moves) > 3)
+		//{
+		//	vector<Move> moves = create_moves(search->b, move->move);
 
-			if (p.depth >= 4 && table_prev != null)
-				Array.Sort(moves, comparer);
-			else
-				Array.Sort(moves);
+		//	/*if (p.depth >= 4 && table_prev != null)
+		//		Array.Sort(moves, comparer);
+		//	else*/
+		//		std::sort(moves.begin(), moves.end());
 
-			value = negascout(moves, p);
-		}
-		else*/
-			value = negascout(moves, p);
+		//	value = negascout(moves, p);
+		//}
+		//else
+			// value = negascout(search->b, move->moves, p);
+			value = negamax(search->b, move->moves, p);
 	}
 	else
 	{
-		value = negamax(moves, p);
+		value = negamax(search->b, move->moves, p);
 	}
 	return value;
 }
 
 float solve_root(SP p) {
-	ulong moves = get_moves(search->b);
+	vector<Move> moves = create_moves(search->b, get_moves(search->b));
 
-	std::cout << "root board\r\n";
-	std::cout << b_to_string(search->b);
-	std::cout << "\r\n";
+	float max_e = -solve(&moves[0], p_deepen(p));
 
-	std::cout << "root move\r\n";
-	std::cout << bit_to_string(moves);
-	std::cout << "\r\n";
+	if (p.beta <= max_e)
+		return max_e;
 
-	float max_e = -1000000;
-	ulong move;
+	p.alpha = max(p.alpha, max_e);
 
-	foreach_bit(move, moves)
+	for (int i = 1; i < moves.size(); ++i)
 	{
-		float e = -solve(new Move(search->b, move), p_deepen(p));
-		max_e = max(max_e, e);
-		p.alpha = max(p.alpha, e);
+		Move* move = &moves[i];
+		float eval = null_window_search(move, p);
 
-		if (p.alpha >= p.beta)
-			return max_e;
+		if (p.beta <= eval)
+			return eval;
+
+		if (p.alpha < eval)
+		{
+			p.alpha = eval;
+			eval = -solve(move, p_deepen(p));
+
+			if (p.beta <= eval)
+				return eval;
+
+			p.alpha = max(p.alpha, eval);
+		}
+		max_e = max(max_e, eval);
 	}
 	return max_e;
 }
 
 int main()
 {
+	//search->b = new Board(4049267728759866752, 364259906054797424);
 	search->b = new Board(36170362438582400, 4635812603068025);
+
+	auto start = std::chrono::system_clock::now();
+
 	float e = solve_root({64, -10000000, 10000000});
-    std::cout << e;
+
+	auto end = std::chrono::system_clock::now();
+	double time = static_cast<double>(std::chrono::duration_cast<std::chrono::microseconds>(end - start).count() / 1000.0);
+
+	std::cout << "Result : " << e << "\r\n";
+	std::cout << "Time : " << time << "\r\n";
+	std::cout << "Nodes : " << count << "\r\n";
+	std::cout << "Time/Node : " << (1000000 * time / count) << "\r\n";
 }
 
